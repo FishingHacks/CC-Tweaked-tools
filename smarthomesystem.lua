@@ -49,21 +49,21 @@ function configure()
     register_command("alarm", function()
         while true do
             call_on_all_devices(
-              peripheral.wrap("back"),
-              "speaker",
-              "playNote",
-              "chime",
-              2,
-              10
+                peripheral.wrap("back"),
+                "speaker",
+                "playNote",
+                "chime",
+                2,
+                10
             )
             sleep(0.25)
             call_on_all_devices(
-              peripheral.wrap("back"),
-              "speaker",
-              "playNote",
-              "chime",
-              2,
-              12
+                peripheral.wrap("back"),
+                "speaker",
+                "playNote",
+                "chime",
+                2,
+                12
             )
             sleep(0.25)
         end
@@ -84,6 +84,18 @@ function configure()
                 call_on_all_devices(peripheral.wrap("back"), "speaker", "playSound", "minecraft:music_disc." .. input)
             end
         end
+    end)
+
+    register_command("test", function (player, id)
+        Thread:run(function ()
+            local i = 0
+            while true do
+                print(i)
+                i = i + 1
+                coroutine.yield()
+            end
+        end)
+        wait_for_abort()
     end)
 
     ---------------------------------------------
@@ -109,6 +121,7 @@ end
         "N": CTP. Sends a notification to the client. Data: Notification Text (iex. Wrong Password)
         "A": PTC. Notifies the Computer that the client closed connection.
         "D": CTP. Notifies the Player that the command finished.
+        "E": CTP. Clears the player's screen
 
 
 
@@ -121,15 +134,9 @@ end
     ]]
 --
 
-cur_event_data = nil
-coroutines = {}
-always_running_routines = {}
+command_threads = {}
+threads = {}
 commands = {}
-
-function command_runner(fn, ...)
-    os.sleep(0.25)
-    return fn(...)
-end
 
 function main()
     term.clear()
@@ -160,7 +167,7 @@ function main()
     print()
 
     while true do
-        if #always_running_routines + #table_entries(coroutines) > 0 then
+        if #threads + #table_entries(command_threads) > 0 then
             os.startTimer(0.5)
         end
         local data = { os.pullEventRaw() }
@@ -168,8 +175,8 @@ function main()
 
         if event == "terminate" then
             -- exit
-            for k, v in pairs(coroutines) do
-                send_packet(v[2], "D", k)
+            for _, v in pairs(command_threads) do
+                v:kill()
             end
             return
         elseif event == "modem_message" then
@@ -184,17 +191,14 @@ function main()
                     local command_name = data[1]
                     local success, id = pcall(tonumber, data[2])
                     if command_name ~= nil and success and commands[command_name] ~= nil then
-                        if coroutines[id] == nil then
-                            local thread = coroutine.create(command_runner);
-                            print("Running Command " .. command_name)
-                            coroutine.resume(thread, commands[command_name], player, id)
-                            coroutines[id] = { thread, player, "" }
+                        if command_threads[id] == nil then
+                            Thread:run_cmd_thread(commands[command_name], id, player)
                         end
                     end
                 elseif packet_type == "A" then
                     -- Abort a coroutine
-                    if coroutines[id] ~= nil then
-                        coroutines[id] = nil
+                    if command_threads[id] ~= nil then
+                        command_threads[id]:kill()
                     end
                 elseif packet_type == "L" then
                     print(player .. " asks for commands")
@@ -203,64 +207,19 @@ function main()
                 os.queueEvent("packet_received", packet_type, id, player, data)
             end
         else
-            cur_event_data = data
             -- run all the coroutines
-            for i = 1, #always_running_routines do
-                if coroutine.status(always_running_routines[i][1]) ~= "dead" then
-                    if cur_event_data[1] == always_running_routines[i][2] then
-                        local success, err = coroutine.resume(always_running_routines[i][1],
-                            table.unpack(cur_event_data, 1))
-                        if success then
-                            always_running_routines[i][2] = err
-                        else
-                            warn("A coroutine crashed: " .. err)
-                        end
-                    else
-                        local success, err = coroutine.resume(always_running_routines[i][1])
-                        if success then
-                            always_running_routines[i][2] = err
-                        else
-                            warn("A coroutine crashed: " .. err)
-                        end
-                    end
-                end
+            for i = #threads, 1, -1 do
+                threads[i]:update(data)
             end
-            for k, v in pairs(coroutines) do
-                if coroutine.status(v[1]) == "dead" then
-                    coroutines[k] = nil
-                    send_packet(v[2], "D", k)
-                    print("Finished running " .. k)
-                else
-                    if cur_event_data[1] == coroutines[k][3] then
-                        local success, err = coroutine.resume(coroutines[k][1], table.unpack(cur_event_data, 1))
-                        if success then
-                            coroutines[k][3] = err
-                        else
-                            print("running " .. k .. " failed")
-                            print("Err: " .. err)
-                            send_packet(v[2], "D", k)
-                            coroutines[k] = nil
-                        end
-                    else
-                        local success, err = coroutine.resume(coroutines[k][1])
-                        if success then
-                            coroutines[k][3] = err
-                        else
-                            print("running " .. k .. " failed")
-                            print("Err: " .. err)
-                            send_packet(v[2], "D", k)
-                            coroutines[k] = nil
-                        end
-                    end
-                end
+            for _, v in pairs(command_threads) do
+                v:update(data)
             end
             -- done
-            cur_event_data = nil
         end
 
-        local num_threads = #table_entries(coroutines)
+        local num_threads = #table_entries(command_threads)
         draw_titlebar("Currently Running Threads: " ..
-        (num_threads + #always_running_routines) .. " (" .. num_threads .. "/" .. #always_running_routines .. ")")
+            (num_threads + #threads) .. " (" .. num_threads .. "/" .. #threads .. ")")
     end
 end
 
@@ -275,15 +234,35 @@ function read_user_input(player, id, prompt, input_id, timeout)
             -- nil = timeout
             return nil
         end
-        data = get_event()
+        data = { os.pullEvent() }
         if data[1] == "packet_received" and data[2] == "S" and data[3] == id and data[4] == player and data[5][2] == input_id then
             return data[5][1]
         end
     end
 end
 
+function clear_user_screen(player, id)
+    send_packet(player, "E", id)
+end
+
+function wait_for_abort()
+    while true do coroutine.yield() end
+end
+
 function broadcast(player, id, text)
     send_packet(player, "N", id, text .. "\n")
+end
+
+function broadcast_named_number_bar(player, id, value, max, name)
+    broadcast(player, id, name .. ":")
+    broadcast_number_bar(player, id, value, max)
+end
+
+function broadcast_number_bar(player, id, value, max)
+    -- we assume the user is using a pocket computer, which has a length of 26. 2 for the bars and the rest for the bar
+    local number_bar_len = math.min(max, 24)
+    local fill = math.floor(math.min(math.max(value, 0), max) * number_bar_len / max)
+    broadcast(player, id, "|" .. string.rep("#", fill) .. string.rep(" ", number_bar_len - fill) .. "|")
 end
 
 function trigger_redstone(command, side, length, strength_on, strength_off)
@@ -311,33 +290,22 @@ function toggle_redstone(command, side, strength_on, strength_off, initial_value
 end
 
 function set_redstone(command, side, strength)
-    register_command(command, function ()
+    register_command(command, function()
         redstone.setAnalogOutput(side, strength)
     end)
 end
 
 function wait_for_event_of_type(type)
     while true do
-        local event = get_event()
+        local event = os.pullEvent()
         if event[0] == type then
             return event
         end
     end
 end
 
-function event_claim()
-    cur_event_data = nil
-end
-
-function get_event()
-    coroutine.yield()
-    return cur_event_data
-end
-
 function register_coroutine(fn, ...)
-    local thread = coroutine.create(fn)
-    coroutine.resume(thread, ...)
-    always_running_routines[#always_running_routines + 1] = { thread, "" }
+    Thread:run(fn, ...)
 end
 
 function register_command(cmd, fn)
@@ -372,9 +340,10 @@ function process_packet(str, is_computer)
     end
 
     -- check if packet is for you
-    -- CTP: R, I, N, D
+    -- CTP: R, I, N, D, E
     -- PTC: L, C, S, A
-    local is_ctp = packet_type == "R" or packet_type == "I" or packet_type == "N" or packet_type == "D"
+    local is_ctp = packet_type == "R" or packet_type == "I" or packet_type == "N" or packet_type == "D" or
+        packet_type == "E"
     local is_ptc = packet_type == "L" or packet_type == "C" or packet_type == "S" or packet_type == "A"
     -- unknown packet type
     if not is_ctp and not is_ptc then error("unknown packet type") end
@@ -455,11 +424,10 @@ end
 StringBuffer = { index = 1, str = "" }
 
 function StringBuffer:new(str)
-    o = {}
-    setmetatable(o, { __index = self })
-    o.str = str
-    o.index = 1
-    return o
+    if type(str) ~= "string" then
+        error("str has to be a string")
+    end
+    return setmetatable({ str = str, index = 1 }, { __index = self })
 end
 
 function StringBuffer:len()
@@ -470,6 +438,129 @@ function StringBuffer:read(bytes)
     local value = self.str:sub(self.index, self.index + bytes - 1)
     self.index = self.index + bytes
     return value
+end
+
+Thread = { children = {}, thread = coroutine.create(function() end), is_command = false, id = 0, command_data_player =
+"" }
+
+__current_thread = nil
+
+function current_thread()
+    return current_thread
+end
+
+function Thread:run(fn, ...)
+    if type(fn) ~= "function" then
+        error("fn is not a function")
+    end
+
+    local fn_args = { ... }
+
+    local o = setmetatable({
+        children = {},
+        thread = coroutine.create(function()
+            -- give the player controller 5 ticks to update state
+            os.sleep(0.25)
+            fn(table.unpack(fn_args))
+        end),
+        is_command = false,
+        id = #threads + 1,
+        command_data_player = nil,
+    }, { __index = self })
+
+    threads[o.id] = o
+
+    if __current_thread ~= nil and type(__current_thread.children) == "table" then
+        __current_thread.children[#__current_thread.children + 1] = self
+    end
+
+    return o
+end
+
+function Thread:run_detached(fn, ...)
+    if type(fn) ~= "function" then
+        error("fn is not a function")
+    end
+
+    local fn_args = { ... }
+
+    local o = setmetatable({
+        children = {},
+        thread = coroutine.create(function()
+            -- give the player controller 5 ticks to update state
+            os.sleep(0.25)
+            fn(table.unpack(fn_args))
+        end),
+        is_command = false,
+        id = #threads + 1,
+        command_data_player = nil,
+    }, { __index = self })
+
+    threads[o.id] = o
+
+    return o
+end
+
+function Thread:run_cmd_thread(fn, id, player, ...)
+    if type(fn) ~= "function" then
+        error("fn is not a function")
+    end
+    if type(id) ~= "number" then
+        error("id is not a number")
+    end
+    if type(player) ~= "string" then
+        error("player is not a string")
+    end
+
+    if command_threads[id] ~= nil then
+        return nil
+    end
+
+    local fn_args = { ... }
+
+    local o = setmetatable({
+        children = {},
+        thread = coroutine.create(function()
+            -- give the player controller 5 ticks to update state
+            os.sleep(0.25)
+            fn(player, id, table.unpack(fn_args)
+        )
+        end),
+        is_command = true,
+        id = id,
+        command_data_player = player,
+    }, { __index = self })
+
+    command_threads[o.id] = o
+
+    return o
+end
+
+function Thread:update(current_event_data)
+    if coroutine.status(self.thread) == "dead" then
+        self:kill()
+        return
+    end
+
+    __current_thread = self
+    coroutine.resume(self.thread, table.unpack(current_event_data))
+    __current_thread = nil
+end
+
+function Thread:kill()
+    if self.is_command then
+        send_packet(self.command_data_player, "D", self.id)
+
+        command_threads[self.id] = nil
+    else
+        table.remove(threads, self.id)
+    end
+
+    for i = 1, #self.children do
+        self.children[i]:kill()
+    end
+
+    return
 end
 
 function table_entries(table)
