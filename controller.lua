@@ -223,17 +223,18 @@ function wait_for_command_end(device, id)
     os.sleep(0.5)
 end
 
-function command_environment(device, id)
+function command_environment(device_name, id)
     while true do
         local data = { os.pullEventRaw() }
         local event = data[1]
+        print(event)
 
         if event == "terminate" then
             send_packet(device_name, "A", id)
             return
         elseif event == "modem_message" then
             local success, p_type, p_id, p_device_name, data = pcall(process_packet, "" .. data[5], false)
-            if success and p_device_name == device and p_id == id then
+            if success and p_device_name == device_name and p_id == id then
                 if p_type == "N" and data[1] ~= nil then
                     write(data[1])
                 elseif p_type == "D" then
@@ -243,7 +244,7 @@ function command_environment(device, id)
                     write(data[1])
                     local val = read()
                     coroutine.yield() -- to check that we're really still supposed to run
-                    send_packet(device, "S", id, val, data[2])
+                    send_packet(device_name, "S", id, val, data[2])
                 end
             end
         end
