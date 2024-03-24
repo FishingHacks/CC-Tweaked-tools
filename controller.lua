@@ -14,9 +14,24 @@ password =
 --works on. You usually
 --wanna leave this as is
 port = 69
--- "gui" or "text"
+--"gui", "text", "select"
 ui_type = "gui"
 --------------------------
+-- Quick Select Config  --
+--------------------------
+-- cmd="device"
+quick_select_config =
+{
+    ["lights toggle"] = "speaker",
+    ["play disc"] = "speaker",
+    ["alarm"] = "speaker",
+}
+--------------------------
+
+
+if ui_type ~= "select" and ui_type ~= "gui" and ui_type ~= "text" then
+    error("ui_type has to be:\n\"gui\", \"text\" or \"select\"")
+end
 
 
 if peripheral.getType("back") ~= "modem" then
@@ -28,7 +43,7 @@ modem.open(port)
 completion = require("cc.completion")
 
 function retrieve_from_list_fn(name, items, titlebar)
-    if ui_type == "gui" then
+    if ui_type == "gui" or ui_type == "select" then
         return render_gui(items, titlebar)
     else
         return get_valid_result(name, items, titlebar)
@@ -78,6 +93,38 @@ function main()
                     term.redirect(old)
                 end
             end
+        end
+    end
+end
+
+function main_quickselect()
+    local commands = table_entries(quick_select_config)
+    commands[#commands + 1] = "exit"
+
+    while true do
+        term.clear()
+        term.setCursorPos(1, 1)
+        draw_titlebar("Select Command")
+
+        local command = render_gui(commands, "Select Command")
+        if command == "exit" then
+            return
+        elseif quick_select_config[command] ~= nil then
+            local device = quick_select_config[command]
+
+            local old = new_window()
+            term.clear()
+            term.setCursorPos(1, 1)
+
+            draw_titlebar("Running: " .. command)
+
+            send_packet(device, "C", os.getComputerID(), command, "" .. os.getComputerID())
+
+            parallel.waitForAny(
+                applyfn(wait_for_command_end, device, os.getComputerID()),
+                applyfn(command_environment, device, os.getComputerID(), command)
+            )
+            term.redirect(old)
         end
     end
 end
@@ -153,7 +200,7 @@ function render_gui_frame(items, event, scroll_y, x, y, w, h)
     return scroll_y, clicked_btn
 end
 
-function is_in_bounds(pos_x, pos_y, rect_x, rect_y, rect_w, rect_h) 
+function is_in_bounds(pos_x, pos_y, rect_x, rect_y, rect_w, rect_h)
     return pos_x >= rect_y and pos_y >= rect_y and pos_x < rect_x + rect_w and pos_y < rect_y + rect_h
 end
 
@@ -180,7 +227,7 @@ function render_button(text, x, y, w, h, bounds_x, bounds_y, bounds_end_x, bound
     -- local end_y = y + h - 1
     if start_x > end_x or start_y > end_y then return end
     paintutils.drawFilledBox(start_x, start_y, end_x, end_y, colors.green)
-    local text_y_off = math.floor((h  - 1) / 2) + y
+    local text_y_off = math.floor((h - 1) / 2) + y
     if text_y_off >= bounds_y and text_y_off < bounds_end_y then
         draw_text_centered(text, x + 2, text_y_off, w - 4, colors.black)
     end
@@ -241,7 +288,7 @@ function command_environment(device_name, id, command)
                     return
                 elseif p_type == "E" then
                     term.clear()
-                    term.setCursorPos(1,1)
+                    term.setCursorPos(1, 1)
                 elseif p_type == "I" and data[1] ~= nil and data[2] ~= nil then
                     write(data[1])
                     local val = read()
@@ -324,7 +371,8 @@ function process_packet(str, is_computer)
     -- CTP: R, I, N, D
     -- PTC: L, C, S, A
     local packet_type = buffer:read(1):upper()
-    local is_ctp = packet_type == "R" or packet_type == "I" or packet_type == "N" or packet_type == "D" or packet_type == "E"
+    local is_ctp = packet_type == "R" or packet_type == "I" or packet_type == "N" or packet_type == "D" or
+    packet_type == "E"
     local is_ptc = packet_type == "L" or packet_type == "C" or packet_type == "S" or packet_type == "A"
     -- unknown packet type
     if not is_ctp and not is_ptc then error("unknown packet type") end
@@ -451,4 +499,8 @@ function table.contains(table, element)
     return false
 end
 
-main()
+if ui_type == "select" then
+    main_quickselect()
+else
+    main()
+end
