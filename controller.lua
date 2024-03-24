@@ -4,7 +4,6 @@
 --------------------------
 --     CONFIGURATION    --
 --------------------------
-
 -- your player name
 player_name =
 "FishingHacks"
@@ -15,7 +14,8 @@ password =
 --works on. You usually
 --wanna leave this as is
 port = 69
-
+-- "gui" or "text"
+ui_type = "gui"
 --------------------------
 
 
@@ -27,9 +27,17 @@ modem.open(port)
 
 completion = require("cc.completion")
 
+function retrieve_from_list_fn(name, items, titlebar)
+    if ui_type == "gui" then
+        return render_gui(items, titlebar)
+    else
+        return get_valid_result(name, items, titlebar)
+    end
+end
+
 function main()
     term.clear()
-    term.setCursorPos(1,1)
+    term.setCursorPos(1, 1)
     draw_titlebar("Collecting Commands")
     local commands = retrieve_commands()
     local devices = table_entries(commands)
@@ -41,31 +49,20 @@ function main()
         term.setCursorPos(1, 1)
         draw_titlebar("Select Device")
 
-        print("Devices:")
-        for i = 1, #devices - 2 do
-            print(devices[i])
-        end
-        local device = get_valid_result("dev", devices, "Select Device")
-        if device == "exit" or device == "back" then
+        local device = retrieve_from_list_fn("dev", devices, "Select Device")
+        if device == nil or device == "exit" or device == "back" then
             return
-        end
-        if commands[device] ~= nil then
+        elseif commands[device] ~= nil then
             while true do
                 term.clear()
                 term.setCursorPos(1, 1)
                 draw_titlebar("Device: " .. device)
-                print("Commands:")
-                for i = 1, #commands[device] - 2 do
-                    print(commands[device][i])
-                end
-                local command = get_valid_result("func", commands[device], "Device: " .. device)
-                if command == "back" then
-                    break
-                end
-                if command == "exit" then
+                local command = retrieve_from_list_fn("func", commands[device], "Device: " .. device)
+                if command == nil or command == "exit" then
                     return
-                end
-                if table.contains(commands[device], command) then
+                elseif command == "back" then
+                    break
+                elseif table.contains(commands[device], command) then
                     local old = new_window()
                     term.clear()
                     term.setCursorPos(1, 1)
@@ -75,13 +72,117 @@ function main()
                     send_packet(device, "C", os.getComputerID(), command, "" .. os.getComputerID())
 
                     parallel.waitForAny(
-                        applyfn(wait_for_packet, "D", os.getComputerID(), device),
+                        applyfn(wait_for_command_end, device, os.getComputerID()),
                         applyfn(command_environment, device, os.getComputerID())
                     )
                     term.redirect(old)
                 end
             end
         end
+    end
+end
+
+function render_gui(items, titlebar)
+    local fg = term.getTextColor()
+    local bg = term.getBackgroundColor()
+    term.clear()
+    term.setCursorPos(1, 1)
+    draw_titlebar(titlebar)
+    local w, h = term.getSize()
+    local scroll_y = render_gui_frame(items, {}, initial_scroll_y or 0, 1, 3, w, h - 3)
+
+    while true do
+        local event = { os.pullEventRaw() }
+        if event == "terminate" then
+            term.setTextColor(fg)
+            term.setBackgroundColor(bg)
+            term.clear()
+            term.setCursorPos(1, 1)
+            return nil
+        end
+        local w, h = term.getSize()
+        paintutils.drawFilledBox(1, 1, w + 1, h + 1, colors.black)
+        term.setCursorPos(1, 1)
+        draw_titlebar(titlebar)
+        local new_scroll_y, clicked = render_gui_frame(items, event, scroll_y, 1, 3, w, h - 3)
+        scroll_y = new_scroll_y
+        if clicked ~= nil then
+            term.setBackgroundColor(bg)
+            term.setTextColor(fg)
+            term.clear()
+            term.setCursorPos(1, 1)
+            return clicked
+        end
+    end
+end
+
+function render_gui_frame(items, event, scroll_y, x, y, w, h)
+    local scroll_y = scroll_y
+
+    if event[1] == "mouse_scroll" and event[3] >= x and event[3] < x + w and event[4] >= y and event[4] < y + h then
+        local max_height = math.max(#items * 4 - h, 0)
+
+        scroll_y = math.max(scroll_y + event[2], 0)
+        if scroll_y > max_height then scroll_y = max_height end
+    end
+
+    local clicked_btn = nil
+
+    if event[1] == "mouse_up" then
+        local mouse_x = event[3]
+        local mouse_y = event[4]
+        if mouse_x >= x and mouse_x < x + w and mouse_y >= y and mouse_y < y + h then
+            -- is in-bounds
+            local local_x = mouse_x - x
+            local local_y = mouse_y - y
+            if local_x ~= 0 and local_x < w - 2 then
+                for i = 1, #items do
+                    if is_in_bounds(local_x, local_y, 2, i * 4 - 4 - scroll_y, w - 2, 3) then
+                        clicked_btn = items[i]
+                    end
+                end
+            end
+        end
+    end
+
+    for i = 1, #items do
+        local btn_y = i * 4 - 4 - scroll_y + y
+        render_button(items[i], x + 1, btn_y, w - 2, 3, x, y, x + w, y + h)
+    end
+
+    return scroll_y, clicked_btn
+end
+
+function is_in_bounds(pos_x, pos_y, rect_x, rect_y, rect_w, rect_h) 
+    return pos_x >= rect_y and pos_y >= rect_y and pos_x < rect_x + rect_w and pos_y < rect_y + rect_h
+end
+
+function draw_text_centered(text, x, y, width, color)
+    local fg = term.getTextColor()
+    if color ~= nil then
+        term.setTextColor(color)
+    end
+    local x = x + math.floor((width - #text) / 2)
+    term.setCursorPos(x, y)
+    term.write(text)
+    term.setTextColor(fg)
+end
+
+function render_button(text, x, y, w, h, bounds_x, bounds_y, bounds_end_x, bounds_end_y)
+    if x + w <= bounds_x or y + h <= bounds_y or x >= bounds_end_x or y >= bounds_end_y then return end
+    local start_x = math.max(x, bounds_x)
+    local start_y = math.max(y, bounds_y)
+    local end_x = math.min(x + w - 1, bounds_end_x - 1)
+    local end_y = math.min(y + h - 1, bounds_end_y - 1)
+    -- local start_x = x
+    -- local start_y = y
+    -- local end_x = x + w - 1
+    -- local end_y = y + h - 1
+    if start_x > end_x or start_y > end_y then return end
+    paintutils.drawFilledBox(start_x, start_y, end_x, end_y, colors.green)
+    local text_y_off = math.floor((h  - 1) / 2) + y
+    if text_y_off >= bounds_y and text_y_off < bounds_end_y then
+        draw_text_centered(text, x + 2, text_y_off, w - 4, colors.black)
     end
 end
 
@@ -116,6 +217,12 @@ function applyfn(fn, ...)
     end
 end
 
+function wait_for_command_end(device, id)
+    wait_for_packet("D", id, device)
+    write("Finished...\n")
+    os.sleep(0.5)
+end
+
 function command_environment(device, id)
     while true do
         local data = { os.pullEventRaw() }
@@ -130,6 +237,7 @@ function command_environment(device, id)
                 if p_type == "N" and data[1] ~= nil then
                     write(data[1])
                 elseif p_type == "D" then
+                    os.sleep(0.5)
                     return
                 elseif p_type == "I" and data[1] ~= nil and data[2] ~= nil then
                     write(data[1])
