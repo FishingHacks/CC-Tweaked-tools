@@ -73,7 +73,7 @@ function main()
 
                     parallel.waitForAny(
                         applyfn(wait_for_command_end, device, os.getComputerID()),
-                        applyfn(command_environment, device, os.getComputerID())
+                        applyfn(command_environment, device, os.getComputerID(), command)
                     )
                     term.redirect(old)
                 end
@@ -223,11 +223,10 @@ function wait_for_command_end(device, id)
     os.sleep(0.5)
 end
 
-function command_environment(device_name, id)
+function command_environment(device_name, id, command)
     while true do
         local data = { os.pullEventRaw() }
         local event = data[1]
-        print(event)
 
         if event == "terminate" then
             send_packet(device_name, "A", id)
@@ -240,6 +239,9 @@ function command_environment(device_name, id)
                 elseif p_type == "D" then
                     os.sleep(0.5)
                     return
+                elseif p_type == "E" then
+                    term.clear()
+                    term.setCursorPos(1,1)
                 elseif p_type == "I" and data[1] ~= nil and data[2] ~= nil then
                     write(data[1])
                     local val = read()
@@ -248,6 +250,8 @@ function command_environment(device_name, id)
                 end
             end
         end
+
+        draw_titlebar("Running: " .. command)
     end
 end
 
@@ -320,7 +324,7 @@ function process_packet(str, is_computer)
     -- CTP: R, I, N, D
     -- PTC: L, C, S, A
     local packet_type = buffer:read(1):upper()
-    local is_ctp = packet_type == "R" or packet_type == "I" or packet_type == "N" or packet_type == "D"
+    local is_ctp = packet_type == "R" or packet_type == "I" or packet_type == "N" or packet_type == "D" or packet_type == "E"
     local is_ptc = packet_type == "L" or packet_type == "C" or packet_type == "S" or packet_type == "A"
     -- unknown packet type
     if not is_ctp and not is_ptc then error("unknown packet type") end
