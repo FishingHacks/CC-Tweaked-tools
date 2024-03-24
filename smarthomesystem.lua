@@ -46,6 +46,29 @@ function configure()
         end
     end)
 
+    register_command("alarm", function()
+        while true do
+            call_on_all_devices(
+              peripheral.wrap("back"),
+              "speaker",
+              "playNote",
+              "chime",
+              2,
+              10
+            )
+            sleep(0.25)
+            call_on_all_devices(
+              peripheral.wrap("back"),
+              "speaker",
+              "playNote",
+              "chime",
+              2,
+              12
+            )
+            sleep(0.25)
+        end
+    end)
+
     register_command("play disc", function(player, id)
         local input = read_user_input(player, id, "disc:\n", 1902, 15)
         if input ~= nil then
@@ -103,6 +126,11 @@ coroutines = {}
 always_running_routines = {}
 commands = {}
 
+function command_runner(fn, ...)
+    os.sleep(0.25)
+    return fn(...)
+end
+
 function main()
     term.clear()
     term.setCursorPos(1, 1)
@@ -157,15 +185,14 @@ function main()
                     local success, id = pcall(tonumber, data[2])
                     if command_name ~= nil and success and commands[command_name] ~= nil then
                         if coroutines[id] == nil then
-                            local thread = coroutine.create(commands[command_name]);
+                            local thread = coroutine.create(command_runner);
                             print("Running Command " .. command_name)
-                            coroutine.resume(thread, player, id)
+                            coroutine.resume(thread, commands[command_name], player, id)
                             coroutines[id] = { thread, player, "" }
                         end
                     end
                 elseif packet_type == "A" then
                     -- Abort a coroutine
-                    local id = data[0]
                     if coroutines[id] ~= nil then
                         coroutines[id] = nil
                     end
@@ -240,6 +267,7 @@ end
 function read_user_input(player, id, prompt, input_id, timeout)
     local input_id = "" .. input_id
     send_packet(player, "I", id, "" .. prompt, input_id)
+    print("Asking " .. player .. " (" .. id .. ") for user input!")
     -- wait for response
     local start = os.clock()
     while true do
